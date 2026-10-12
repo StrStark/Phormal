@@ -148,6 +148,30 @@ A Phormal Bridge link is point-to-point: **one exit link per Iran peer**.
 
 ---
 
+## 🪨 Quick start — Phormal GRE over IPv6
+
+Phormal GRE can run its outer tunnel over **IPv6** as well as IPv4. That helps when the IPv4 path between the two servers is blocked but IPv6 still passes.
+
+1. **Exit (Kharej) — menu 13**, then **Entry (Iran) — menu 14**.
+2. Mode: `primary` (GRE).
+3. **Outer IP version: `6`.** This server's IPv6 is auto-detected; press Enter to accept it, or type another one. Then enter the peer's public IPv6.
+4. Private /30 IPs work exactly as with IPv4 (defaults `10.77.0.1` Iran ↔ `10.77.0.2` Kharej).
+
+| Mode | Outer IPv4 | Outer IPv6 |
+| ---- | ---------- | ---------- |
+| `primary` | `gre` | `ip6gre` |
+| `alternate` | `ipip` | `ip6tnl` mode `ipip6` (IPv4-in-IPv6) |
+
+Notes:
+
+- IPv6 tunnels are created with `encaplimit none` (no Destination Options extension header, which many paths drop) and hop limit 255.
+- Prefer **`primary`** on IPv6. Some paths (e.g. Iran ↔ OVH) pass `ip6gre` but drop raw IPv4-in-IPv6 (next-header 4).
+- Use the server's real global IPv6 (`ip -6 addr show scope global`). An address marked `dadfailed` or `tentative` can't be used as a tunnel endpoint.
+- Existing IPv4 tunnels are unaffected. A config with no `IP_FAMILY` is treated as IPv4.
+- The path test (menu 1) still checks the IPv4 tunnel modes only.
+
+---
+
 ## 🗂️ Files & services
 
 | Path | Purpose |

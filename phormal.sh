@@ -171,6 +171,7 @@ ensure_mirror_conf() {
 have()        { command -v "$1" >/dev/null 2>&1; }
 
 valid_ipv4()  { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+valid_ipv6()  { [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:.]+$ && "$1" != *:::* ]]; }
 
 # Strip ANSI colour codes accidentally captured from menu stdout.
 sanitize_meta_val() {
@@ -3395,12 +3396,22 @@ meta="${dir}/meta.conf"
 # shellcheck disable=SC1090
 source "${meta}"
 IFACE="${IFACE:-phgre${name}}"
+IP_FAMILY="${IP_FAMILY:-4}"
 ip link del "${IFACE}" 2>/dev/null || true
-case "${TUN_MODE}" in
-  gre) ip tunnel add "${IFACE}" mode gre remote "${REMOTE_V4}" local "${LOCAL_V4}" ttl 255 ;;
-  ipip) ip tunnel add "${IFACE}" mode ipip remote "${REMOTE_V4}" local "${LOCAL_V4}" ttl 255 ;;
-  *) echo "bad TUN_MODE" >&2; exit 1 ;;
-esac
+if [[ "${IP_FAMILY}" == 6 ]]; then
+  # encaplimit none: skip the Destination Options header many paths drop.
+  case "${TUN_MODE}" in
+    gre) ip link add "${IFACE}" type ip6gre remote "${REMOTE_V6}" local "${LOCAL_V6}" ttl 255 encaplimit none ;;
+    ipip) ip link add "${IFACE}" type ip6tnl mode ipip6 remote "${REMOTE_V6}" local "${LOCAL_V6}" ttl 255 encaplimit none ;;
+    *) echo "bad TUN_MODE" >&2; exit 1 ;;
+  esac
+else
+  case "${TUN_MODE}" in
+    gre) ip tunnel add "${IFACE}" mode gre remote "${REMOTE_V4}" local "${LOCAL_V4}" ttl 255 ;;
+    ipip) ip tunnel add "${IFACE}" mode ipip remote "${REMOTE_V4}" local "${LOCAL_V4}" ttl 255 ;;
+    *) echo "bad TUN_MODE" >&2; exit 1 ;;
+  esac
+fi
 ip link set "${IFACE}" up
 ip addr add "${LOCAL_PRIV}/30" dev "${IFACE}"
 ip route add "${REMOTE_PRIV}/32" dev "${IFACE}" 2>/dev/null || true
@@ -3488,7 +3499,7 @@ _create_layer_gre_tunnel() {
   rule
   info "Phormal GRE — add ${role} tunnel"
   rule
-  local name local_v4 remote_v4 mode local_priv remote_priv iface gre_mode
+  local name local_v4 remote_v4 local_v6 remote_v6 det_v6 family mode local_priv remote_priv iface gre_mode
   name="$(layer_pick_name gre)" || return 1
   mkdir -p "$(layer_idir gre "${name}")"
   layer_meta_set gre "${name}" ROLE "${role}"
@@ -3499,15 +3510,40 @@ _create_layer_gre_tunnel() {
     *) mode=gre ;;
   esac
   layer_meta_set gre "${name}" TUN_MODE "${mode}"
-  local_v4="$(ask 'This server public IPv4')"
-  if [[ "${role}" == exit ]]; then
-    remote_v4="$(ask 'Iran entry public IPv4')"
+  family="$(ask 'Outer IP version [4/6] (default 4)')"; family="${family:-4}"
+  if [[ "${family}" == 6 ]]; then
+    det_v6="$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+      | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+    local_v6="$(ask "This server public IPv6 [${det_v6:-none detected}]")"; local_v6="${local_v6:-${det_v6}}"
+    if [[ "${role}" == exit ]]; then
+      remote_v6="$(ask 'Iran entry public IPv6')"
+    else
+      remote_v6="$(ask 'Peer public IPv6')"
+    fi
+    if ! valid_ipv6 "${local_v6}" || ! valid_ipv6 "${remote_v6}"; then
+      fail "Invalid IPv6 address."
+      rm -rf "$(layer_idir gre "${name}")"
+      return 1
+    fi
+    layer_meta_set gre "${name}" IP_FAMILY 6
+    layer_meta_set gre "${name}" LOCAL_V6 "${local_v6}"
+    layer_meta_set gre "${name}" REMOTE_V6 "${remote_v6}"
   else
-    remote_v4="$(ask 'Peer public IPv4')"
+    local_v4="$(ask 'This server public IPv4')"
+    if [[ "${role}" == exit ]]; then
+      remote_v4="$(ask 'Iran entry public IPv4')"
+    else
+      remote_v4="$(ask 'Peer public IPv4')"
+    fi
+    if ! valid_ipv4 "${local_v4}" || ! valid_ipv4 "${remote_v4}"; then
+      fail "Invalid IPv4 address."
+      rm -rf "$(layer_idir gre "${name}")"
+      return 1
+    fi
+    layer_meta_set gre "${name}" IP_FAMILY 4
+    layer_meta_set gre "${name}" LOCAL_V4 "${local_v4}"
+    layer_meta_set gre "${name}" REMOTE_V4 "${remote_v4}"
   fi
-  valid_ipv4 "${local_v4}" && valid_ipv4 "${remote_v4}" || return 1
-  layer_meta_set gre "${name}" LOCAL_V4 "${local_v4}"
-  layer_meta_set gre "${name}" REMOTE_V4 "${remote_v4}"
   if [[ "${role}" == exit ]]; then
     local_priv="$(ask 'Local private /30 IP [10.77.0.2]')"; local_priv="${local_priv:-10.77.0.2}"
     remote_priv="$(ask 'Remote private /30 IP [10.77.0.1]')"; remote_priv="${remote_priv:-10.77.0.1}"
